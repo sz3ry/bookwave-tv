@@ -4,6 +4,7 @@ import 'package:bookwave_tv/app_state.dart';
 import 'package:bookwave_tv/storage/credentials_store.dart';
 import 'package:bookwave_tv/storage/local_store.dart';
 import 'package:bookwave_tv/storytel/models.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -126,4 +127,99 @@ void main() {
     expect(s.controller.stops, greaterThan(0));
     expect(await s.creds.read(), isNull);
   });
+
+  test('resume on the player without a book reopens the last book', () async {
+    final s = await Setup.create(lastBook: shelfBook('c1'));
+    await s.state.start();
+    // The book was dropped while the app was in the background.
+    await s.controller.stop();
+    await s.state.resumed();
+    expect(s.controller.opened, ['c1', 'c1']);
+    expect(s.controller.book?.consumableId, 'c1');
+    expect(s.state.route, AppRoute.player);
+  });
+
+  test('resume with a book loaded reopens nothing', () async {
+    final s = await Setup.create(lastBook: shelfBook('c1'));
+    await s.state.start();
+    await s.state.resumed();
+    s.state.openLibrary();
+    await s.controller.stop();
+    await s.state.resumed();
+    expect(s.controller.opened, ['c1']);
+  });
+
+  test('start keeps the player and retries the last book while offline', () {
+    late Setup s;
+    fakeAsync((async) {
+      Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
+      async.flushMicrotasks();
+      s.controller.openError = Exception('offline');
+      s.state.start();
+      async.flushMicrotasks();
+      expect(s.state.route, AppRoute.player);
+      expect(s.state.offline, isTrue);
+      expect(s.controller.opened, ['c1']);
+      s.controller.openError = Exception('still offline');
+      final gate = s.controller.openGate = Completer<void>();
+      async.elapse(const Duration(seconds: 10));
+      expect(s.controller.opened, ['c1', 'c1']);
+      // The no-connection state stays while the retry runs.
+      expect(s.state.offline, isTrue);
+      gate.complete();
+      async.flushMicrotasks();
+      expect(s.state.route, AppRoute.player);
+      expect(s.state.offline, isTrue);
+      async.elapse(const Duration(seconds: 10));
+      expect(s.controller.opened, ['c1', 'c1', 'c1']);
+      expect(s.state.route, AppRoute.player);
+      expect(s.state.offline, isFalse);
+      expect(s.controller.book?.consumableId, 'c1');
+      async.elapse(const Duration(seconds: 30));
+      expect(s.controller.opened, hasLength(3));
+    });
+  });
+
+  test('opening the library cancels the offline retry', () {
+    late Setup s;
+    fakeAsync((async) {
+      Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
+      async.flushMicrotasks();
+      s.controller.openError = Exception('offline');
+      s.state.start();
+      async.flushMicrotasks();
+      s.state.openLibrary();
+      expect(s.state.offline, isFalse);
+      async.elapse(const Duration(seconds: 30));
+      expect(s.controller.opened, ['c1']);
+      expect(s.state.route, AppRoute.library);
+    });
+  });
+
+  test('dispose cancels the offline retry', () {
+    late Setup s;
+    fakeAsync((async) {
+      Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
+      async.flushMicrotasks();
+      s.controller.openError = Exception('offline');
+      s.state.start();
+      async.flushMicrotasks();
+      s.state.dispose();
+      async.elapse(const Duration(seconds: 30));
+      expect(s.controller.opened, ['c1']);
+    });
+  });
+
+  test(
+    'picking the book already loaded returns to it without reopening',
+    () async {
+      final s = await Setup.create(lastBook: shelfBook('c1'));
+      await s.state.start();
+      s.state.openLibrary();
+      await s.state.pickBook(shelfBook('c1'));
+      expect(s.controller.opened, ['c1']);
+      expect(s.controller.stops, 0);
+      expect(s.state.route, AppRoute.player);
+    },
+  );
 }

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 
-/// Shown while the shelf cannot be loaded; the owner retries on its own.
+/// Shown while Storytel cannot be reached; the owner retries on its own.
 class NoConnection extends StatelessWidget {
   const NoConnection({super.key});
 

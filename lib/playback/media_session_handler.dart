@@ -25,7 +25,7 @@ class MediaSessionHandler extends BaseAudioHandler {
   @override
   Future<void> stop() async {
     // Keep the chosen book when the system stops the session (for example a
-    // dismissed notification); only app detach clears it.
+    // dismissed notification); only a book switch or logout clears it.
     await pause();
     await super.stop();
   }

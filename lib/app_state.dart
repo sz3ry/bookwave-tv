@@ -24,11 +24,19 @@ class AppState extends ChangeNotifier {
   final CredentialsStore _credentials;
   final LocalStore _store;
 
+  static const _retryInterval = Duration(seconds: 10);
+
   AppRoute _route = AppRoute.login;
   bool _started = false;
   Future<void>? _opening;
+  bool _offline = false;
+  Timer? _retry;
 
   AppRoute get route => _route;
+
+  /// The last book could not be opened at launch (no network): the player
+  /// shows a no-connection state and the book is retried every 10 s.
+  bool get offline => _offline;
 
   /// False until [start] has decided the first route.
   bool get started => _started;
@@ -50,7 +58,19 @@ class AppState extends ChangeNotifier {
       _setRoute(AppRoute.library);
       return;
     }
-    await _open(last, fallback: AppRoute.library);
+    await _open(last, retryOffline: true);
+  }
+
+  /// The app came back to the foreground. The player must never sit there
+  /// without a book (e.g. the engine dropped it): reopen the last one.
+  Future<void> resumed() async {
+    if (_route != AppRoute.player ||
+        controller.book != null ||
+        _opening != null) {
+      return;
+    }
+    final last = _store.lastBook();
+    if (last != null) await _open(last, retryOffline: true);
   }
 
   /// Throws what the client throws; the login screen turns it into a message.
@@ -64,16 +84,22 @@ class AppState extends ChangeNotifier {
   /// opening is ignored: the controller does not serialise `open` calls.
   Future<void> pickBook(ShelfBook b) async {
     if (_opening != null) return;
-    await _open(b, fallback: AppRoute.library);
+    // The book already loaded keeps its place: just return to it.
+    if (b.consumableId == controller.book?.consumableId) return closeLibrary();
+    await _open(b);
   }
 
-  void openLibrary() => _setRoute(AppRoute.library);
+  void openLibrary() {
+    _cancelRetry();
+    _setRoute(AppRoute.library);
+  }
 
   void closeLibrary() {
     if (controller.book != null) _setRoute(AppRoute.player);
   }
 
   Future<void> logout() async {
+    _cancelRetry();
     await controller.stop();
     await _credentials.clear();
     _setRoute(AppRoute.login);
@@ -81,16 +107,28 @@ class AppState extends ChangeNotifier {
 
   /// Storytel no longer accepts the stored login: forget it and ask again.
   void authRejected() {
+    _cancelRetry();
     unawaited(controller.stop());
     unawaited(_credentials.clear());
     _setRoute(AppRoute.login);
   }
 
-  Future<void> _open(ShelfBook b, {required AppRoute fallback}) {
+  /// Opens [b] on the player. When that fails, a user pick falls back to the
+  /// library; with [retryOffline] (the last book at launch or on resume) the
+  /// player stays, shows no connection and tries again every 10 s.
+  Future<void> _open(ShelfBook b, {bool retryOffline = false}) {
+    _retry?.cancel();
+    _retry = null;
+    // A retry keeps the no-connection state until it succeeds.
+    if (!retryOffline) _offline = false;
     _setRoute(AppRoute.player);
     final run = () async {
       try {
         await controller.open(b);
+        if (_offline) {
+          _offline = false;
+          notifyListeners();
+        }
       } catch (e) {
         debugPrint('Opening a book failed: ${e.runtimeType}');
         // Drop the half-opened book so Back cannot lead to a dead player;
@@ -98,12 +136,33 @@ class AppState extends ChangeNotifier {
         try {
           await controller.stop();
         } catch (_) {}
-        // A rejected login already routed to the login screen.
-        if (_route == AppRoute.player) _setRoute(fallback);
+        // A rejected login already routed to the login screen, and a parent
+        // who opened the library meanwhile stays there.
+        if (_route != AppRoute.player) return;
+        if (!retryOffline) return _setRoute(AppRoute.library);
+        _offline = true;
+        notifyListeners();
+        _retry = Timer(_retryInterval, () {
+          _retry = null;
+          unawaited(_open(b, retryOffline: true));
+        });
       }
     }();
     _opening = run;
     return run.whenComplete(() => _opening = null);
+  }
+
+  void _cancelRetry() {
+    _retry?.cancel();
+    _retry = null;
+    _offline = false;
+  }
+
+  @override
+  void dispose() {
+    _retry?.cancel();
+    _retry = null;
+    super.dispose();
   }
 
   void _setRoute(AppRoute r) {

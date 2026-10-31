@@ -5,6 +5,7 @@ import 'app_state.dart';
 import 'l10n/app_localizations.dart';
 import 'ui/library_screen.dart';
 import 'ui/login_screen.dart';
+import 'ui/no_connection.dart';
 import 'ui/player_screen.dart';
 
 class BookwaveTvApp extends StatelessWidget {
@@ -36,6 +37,10 @@ class BookwaveTvApp extends StatelessWidget {
               onPick: state.pickBook,
               onBack: state.closeLibrary,
               canGoBack: state.controller.book != null,
+            ),
+            // The last book is retried; Back still leaves the app.
+            AppRoute.player when state.offline => const Scaffold(
+              body: NoConnection(),
             ),
             AppRoute.player => PlayerScreen(
               controller: state.controller,

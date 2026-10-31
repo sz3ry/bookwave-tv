@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -30,7 +32,13 @@ Future<void> main() async {
     ),
   );
 
-  AppLifecycleListener(onDetach: controller.stop);
+  // Back at the root only moves the app to the background (MainActivity), so
+  // the book keeps playing. If the activity is torn down anyway, save the
+  // place without dropping the book: the cached engine may keep playing.
+  AppLifecycleListener(
+    onDetach: () => unawaited(controller.flush()),
+    onResume: () => unawaited(state.resumed()),
+  );
 
   runApp(BookwaveTvApp(state));
   await state.start();
