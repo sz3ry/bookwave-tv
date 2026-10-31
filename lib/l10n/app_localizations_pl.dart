@@ -35,7 +35,7 @@ class AppLocalizationsPl extends AppLocalizations {
 
   @override
   String get libraryEmpty =>
-      'Na półce nie ma audiobooków. Dodaj książkę w Bookwave albo w aplikacji Storytel.';
+      'Na półce nie ma audiobooków dla dzieci. Dodaj książkę w Bookwave albo w aplikacji Storytel.';
 
   @override
   String get noConnection => 'Brak połączenia. Ponawiam…';

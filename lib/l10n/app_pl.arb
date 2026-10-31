@@ -8,7 +8,7 @@
   "loginRejected": "Nieprawidłowy e-mail lub hasło",
   "loginFailed": "Nie udało się zalogować. Spróbuj ponownie.",
   "library": "Biblioteka",
-  "libraryEmpty": "Na półce nie ma audiobooków. Dodaj książkę w Bookwave albo w aplikacji Storytel.",
+  "libraryEmpty": "Na półce nie ma audiobooków dla dzieci. Dodaj książkę w Bookwave albo w aplikacji Storytel.",
   "noConnection": "Brak połączenia. Ponawiam…",
   "play": "Odtwórz",
   "pause": "Pauza",

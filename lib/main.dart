@@ -1,38 +1,54 @@
+import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 
-import 'l10n/app_localizations.dart';
+import 'app.dart';
+import 'app_state.dart';
+import 'playback/just_audio_engine.dart';
+import 'playback/media_session_handler.dart';
+import 'playback/player_controller.dart';
+import 'storage/credentials_store.dart';
+import 'storage/local_store.dart';
+import 'storytel/storytel_client.dart';
+import 'storytel/storytel_http.dart';
 
-void main() {
-  runApp(const BookwaveTvApp());
-}
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-class BookwaveTvApp extends StatelessWidget {
-  const BookwaveTvApp({super.key});
+  final store = await LocalStore.open();
+  final credentials = CredentialsStore(const FlutterSecureStorage());
+  // Both callbacks fire before the state exists only if a call is made
+  // before runApp, which never happens.
+  late final AppState state;
+  final client = StorytelClient(
+    StorytelHttp(http.Client()),
+    onCredentialsRejected: () => state.authRejected(),
+  );
+  final controller = PlayerController(
+    engine: JustAudioEngine(),
+    client: client,
+    store: store,
+    onAuthFailure: () => state.authRejected(),
+  );
+  state = AppState(
+    client: client,
+    credentials: credentials,
+    store: store,
+    controller: controller,
+  );
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      onGenerateTitle: (context) => AppLocalizations.of(context).appTitle,
-      theme: ThemeData.dark(useMaterial3: true),
-      locale: const Locale('pl'),
-      supportedLocales: const [Locale('pl')],
-      localizationsDelegates: const [
-        AppLocalizations.delegate,
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
-      home: Builder(
-        builder: (context) => Scaffold(
-          body: Center(
-            child: Text(
-              AppLocalizations.of(context).appTitle,
-              style: Theme.of(context).textTheme.displayMedium,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  await AudioService.init(
+    builder: () => MediaSessionHandler(controller),
+    config: const AudioServiceConfig(
+      androidNotificationChannelId: 'com.sz3ry.bookwavetv.playback',
+      androidNotificationChannelName: 'Bookwave TV',
+      androidStopForegroundOnPause: false,
+    ),
+  );
+
+  AppLifecycleListener(onDetach: controller.stop);
+
+  runApp(BookwaveTvApp(state));
+  await state.start();
 }

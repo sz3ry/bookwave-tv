@@ -145,7 +145,7 @@ abstract class AppLocalizations {
   /// No description provided for @libraryEmpty.
   ///
   /// In pl, this message translates to:
-  /// **'Na półce nie ma audiobooków. Dodaj książkę w Bookwave albo w aplikacji Storytel.'**
+  /// **'Na półce nie ma audiobooków dla dzieci. Dodaj książkę w Bookwave albo w aplikacji Storytel.'**
   String get libraryEmpty;
 
   /// No description provided for @noConnection.
