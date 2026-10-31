@@ -545,4 +545,43 @@ void main() {
       expect(h.store.position('c1')?.positionMs, 80000);
     });
   });
+
+  test('open during an in-flight remote write switches books immediately', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      final gate = h.client.writeGate = Completer<void>();
+      h.async.elapse(const Duration(seconds: 15));
+      h.engine.position = const Duration(milliseconds: 80000);
+      h.run(() => h.controller.open(book('c2')));
+      expect(h.controller.book?.consumableId, 'c2');
+      expect(h.engine.loads.last, startsWith('https://cdn.example/c2/'));
+      expect(h.store.position('c1')?.positionMs, 80000);
+      expect(h.client.writes, isEmpty);
+      // The old book's guarded write still runs, after the hung one.
+      gate.complete();
+      h.async.flushMicrotasks();
+      expect(h.client.writes, [75000, 80000]);
+      expect(h.store.position('c1')?.remoteSeen, 80000);
+    });
+  });
+
+  test('ticks keep saving locally while a remote write hangs', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      h.client.writeGate = Completer<void>(); // never completes
+      h.async.elapse(const Duration(seconds: 15));
+      h.engine.position = const Duration(milliseconds: 90000);
+      h.async.elapse(const Duration(seconds: 15));
+      h.engine.position = const Duration(milliseconds: 105000);
+      h.async.elapse(const Duration(seconds: 15));
+      expect(h.store.position('c1')?.positionMs, 105000);
+      expect(h.client.writes, isEmpty);
+    });
+  });
 }

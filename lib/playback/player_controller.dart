@@ -29,6 +29,12 @@ class _Session {
   bool recoveryUsed = false;
   int? remoteSeen;
 
+  /// Remote sync waiting in the queue: its newest target position, and
+  /// whether it must re-read the remote first (paused-book write guard).
+  bool remoteQueued = false;
+  int? remoteTargetMs;
+  bool remoteGuarded = false;
+
   /// Last good position: applied start, seek target or saved value.
   int lastKnownMs = 0;
   DateTime? lastRemoteCheckAt;
@@ -65,7 +71,7 @@ class PlayerController extends ChangeNotifier {
   bool _tickRunning = false;
 
   /// Serialises remote work (guarded reads, writes, `remoteSeen` updates);
-  /// local saves never wait on it.
+  /// nothing the user or the ticker does waits on it.
   Future<void> _chain = Future.value();
 
   _Session? _s;
@@ -150,13 +156,7 @@ class PlayerController extends ChangeNotifier {
     final pos = _posMs(s);
     await _engine.pause();
     await _saveLocal(s, pos);
-    await _serial(() async {
-      if (!shouldWriteRemote(pos, s.remoteSeen)) return;
-      final current = await _readRemote(s.id);
-      if (!remoteMovedSince(current?.positionMs, s.remoteSeen)) {
-        await _writeRemote(s, pos);
-      }
-    });
+    _queueRemote(s, pos, guarded: true);
   }
 
   Future<void> _pause(_Session s) async {
@@ -295,13 +295,33 @@ class PlayerController extends ChangeNotifier {
   int _posMs(_Session s) =>
       s.positionTrusted ? _engine.position.inMilliseconds : s.lastKnownMs;
 
-  /// Saves locally at once, then (queued behind earlier remote work) writes
-  /// the remote when the position moved.
+  /// Saves locally, then queues the remote write without waiting on it.
   Future<void> _saveAndSync(_Session s, int pos) async {
     await _saveLocal(s, pos);
-    await _serial(() async {
-      if (shouldWriteRemote(pos, s.remoteSeen)) await _writeRemote(s, pos);
-    });
+    _queueRemote(s, pos);
+  }
+
+  /// Queues a remote write of [pos] behind earlier remote work. At most one
+  /// job per session waits in the queue; a newer call only moves its target.
+  void _queueRemote(_Session s, int pos, {bool guarded = false}) {
+    s.remoteTargetMs = pos;
+    s.remoteGuarded = s.remoteGuarded || guarded;
+    if (s.remoteQueued) return;
+    s.remoteQueued = true;
+    _guard(
+      _serial(() async {
+        s.remoteQueued = false;
+        final target = s.remoteTargetMs!;
+        final guard = s.remoteGuarded;
+        s.remoteGuarded = false;
+        if (!shouldWriteRemote(target, s.remoteSeen)) return;
+        if (guard) {
+          final current = await _readRemote(s.id);
+          if (remoteMovedSince(current?.positionMs, s.remoteSeen)) return;
+        }
+        await _writeRemote(s, target);
+      }),
+    );
   }
 
   Future<void> _saveLocal(_Session s, int pos) async {
