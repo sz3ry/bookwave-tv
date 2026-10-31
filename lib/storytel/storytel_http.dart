@@ -88,7 +88,8 @@ class StorytelHttp {
     final isLogin = uri.path.contains('login.action');
     final streamed = await _client.send(request).timeout(timeout);
     final res = await http.Response.fromStream(streamed).timeout(timeout);
-    final data = _parseBody(res.body);
+    // package:http falls back to latin1 without a charset; Storytel sends UTF-8.
+    final data = _parseBody(utf8.decode(res.bodyBytes, allowMalformed: true));
 
     if (res.statusCode == 401) {
       throw StorytelAuthException(

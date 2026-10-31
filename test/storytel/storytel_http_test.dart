@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:bookwave_tv/storytel/storytel_http.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -97,5 +99,29 @@ void main() {
         isA<StorytelHttpException>().having((e) => e.status, 'status', 500),
       ),
     );
+  });
+
+  test('decodes bodies as UTF-8 even without a charset', () async {
+    final h = make(
+      (_) => http.Response.bytes(
+        utf8.encode('{"title":"Dzieci z Bullerbyn – Łódź"}'),
+        200,
+        headers: {'content-type': 'application/json'},
+      ),
+    );
+    final res = await h.send(url: 'https://api.test/x');
+    expect((res.data as Map)['title'], 'Dzieci z Bullerbyn – Łódź');
+  });
+
+  test('decodes UTF-8 for a content-type that defaults to latin1', () async {
+    final h = make(
+      (_) => http.Response.bytes(
+        utf8.encode('{"title":"Dzieci z Bullerbyn – Łódź"}'),
+        200,
+        headers: {'content-type': 'text/json'},
+      ),
+    );
+    final res = await h.send(url: 'https://api.test/x');
+    expect((res.data as Map)['title'], 'Dzieci z Bullerbyn – Łódź');
   });
 }
