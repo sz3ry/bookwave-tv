@@ -5,6 +5,7 @@ import 'app_state.dart';
 import 'l10n/app_localizations.dart';
 import 'ui/library_screen.dart';
 import 'ui/login_screen.dart';
+import 'ui/player_screen.dart';
 
 class BookwaveTvApp extends StatelessWidget {
   const BookwaveTvApp(this.state, {super.key});
@@ -36,40 +37,12 @@ class BookwaveTvApp extends StatelessWidget {
               onBack: state.closeLibrary,
               canGoBack: state.controller.book != null,
             ),
-            AppRoute.player => _PlayerPlaceholder(state),
+            AppRoute.player => PlayerScreen(
+              controller: state.controller,
+              onOpenLibrary: state.openLibrary,
+            ),
           };
         },
-      ),
-    );
-  }
-}
-
-/// Stand-in until the real player screen replaces it.
-class _PlayerPlaceholder extends StatelessWidget {
-  const _PlayerPlaceholder(this.state);
-
-  final AppState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context);
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              state.controller.book?.title ?? '',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const SizedBox(height: 24),
-            FilledButton(
-              autofocus: true,
-              onPressed: state.openLibrary,
-              child: Text(l10n.library),
-            ),
-          ],
-        ),
       ),
     );
   }
