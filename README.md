@@ -3,6 +3,10 @@
 An unofficial Android TV app (Flutter) that plays your Storytel audiobooks on a
 Chromecast with Google TV. The UI is in Polish.
 
+This is an unofficial app, not affiliated with or endorsed by Storytel. The
+Storytel API usage is ported from [Bookwave](https://github.com/sz3ry/bookwave).
+Licensed under the MIT License, see [LICENSE](LICENSE).
+
 ## Release signing
 
 Create the keystore once (keep it outside the repo and back it up):
@@ -17,7 +21,7 @@ Then create `android/key.properties` (git-ignored):
 storePassword=<store password>
 keyPassword=<key password>
 keyAlias=bookwave-tv
-storeFile=/home/wisienka/.android/bookwave-tv.jks
+storeFile=/home/<user>/.android/bookwave-tv.jks
 ```
 
 Without `android/key.properties` the release build falls back to the debug keys.
