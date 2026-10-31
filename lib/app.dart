@@ -38,9 +38,10 @@ class BookwaveTvApp extends StatelessWidget {
               onBack: state.closeLibrary,
               canGoBack: state.controller.book != null,
             ),
-            // The last book is retried; Back still leaves the app.
-            AppRoute.player when state.offline => const Scaffold(
-              body: NoConnection(),
+            // The last book is retried; Back still leaves the app, OK on the
+            // button opens the library.
+            AppRoute.player when state.offline => Scaffold(
+              body: NoConnection(onOpenLibrary: state.openLibrary),
             ),
             AppRoute.player => PlayerScreen(
               controller: state.controller,

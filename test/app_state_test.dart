@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:bookwave_tv/app_state.dart';
 import 'package:bookwave_tv/storage/credentials_store.dart';
 import 'package:bookwave_tv/storage/local_store.dart';
 import 'package:bookwave_tv/storytel/models.dart';
+import 'package:bookwave_tv/storytel/storytel_http.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -154,13 +156,13 @@ void main() {
     fakeAsync((async) {
       Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
       async.flushMicrotasks();
-      s.controller.openError = Exception('offline');
+      s.controller.openError = const SocketException('offline');
       s.state.start();
       async.flushMicrotasks();
       expect(s.state.route, AppRoute.player);
       expect(s.state.offline, isTrue);
       expect(s.controller.opened, ['c1']);
-      s.controller.openError = Exception('still offline');
+      s.controller.openError = const SocketException('still offline');
       final gate = s.controller.openGate = Completer<void>();
       async.elapse(const Duration(seconds: 10));
       expect(s.controller.opened, ['c1', 'c1']);
@@ -180,12 +182,46 @@ void main() {
     });
   });
 
+  test('launch with a permanent open failure goes to the library', () {
+    late Setup s;
+    fakeAsync((async) {
+      Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
+      async.flushMicrotasks();
+      s.controller.openError = StorytelHttpException(404, null);
+      s.state.start();
+      async.flushMicrotasks();
+      expect(s.state.route, AppRoute.library);
+      expect(s.state.offline, isFalse);
+      expect(s.controller.stops, 1);
+      expect(s.local.lastBook()?.consumableId, 'c1');
+      async.elapse(const Duration(seconds: 30));
+      expect(s.controller.opened, ['c1']);
+      expect(s.state.route, AppRoute.library);
+    });
+  });
+
+  test('launch with a 5xx keeps retrying on the player', () {
+    late Setup s;
+    fakeAsync((async) {
+      Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
+      async.flushMicrotasks();
+      s.controller.openError = StorytelHttpException(503, null);
+      s.state.start();
+      async.flushMicrotasks();
+      expect(s.state.route, AppRoute.player);
+      expect(s.state.offline, isTrue);
+      async.elapse(const Duration(seconds: 10));
+      expect(s.controller.opened, ['c1', 'c1']);
+      expect(s.state.offline, isFalse);
+    });
+  });
+
   test('opening the library cancels the offline retry', () {
     late Setup s;
     fakeAsync((async) {
       Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
       async.flushMicrotasks();
-      s.controller.openError = Exception('offline');
+      s.controller.openError = const SocketException('offline');
       s.state.start();
       async.flushMicrotasks();
       s.state.openLibrary();
@@ -201,7 +237,7 @@ void main() {
     fakeAsync((async) {
       Setup.create(lastBook: shelfBook('c1')).then((v) => s = v);
       async.flushMicrotasks();
-      s.controller.openError = Exception('offline');
+      s.controller.openError = const SocketException('offline');
       s.state.start();
       async.flushMicrotasks();
       s.state.dispose();

@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import 'playback/player_controller.dart';
 import 'storage/credentials_store.dart';
 import 'storage/local_store.dart';
 import 'storytel/models.dart';
 import 'storytel/storytel_client.dart';
+import 'storytel/storytel_http.dart';
 
 enum AppRoute { login, library, player }
 
@@ -114,8 +117,9 @@ class AppState extends ChangeNotifier {
   }
 
   /// Opens [b] on the player. When that fails, a user pick falls back to the
-  /// library; with [retryOffline] (the last book at launch or on resume) the
-  /// player stays, shows no connection and tries again every 10 s.
+  /// library; with [retryOffline] (the last book at launch or on resume) a
+  /// transient failure keeps the player, shows no connection and tries again
+  /// every 10 s, any other failure falls back to the library.
   Future<void> _open(ShelfBook b, {bool retryOffline = false}) {
     _retry?.cancel();
     _retry = null;
@@ -139,7 +143,12 @@ class AppState extends ChangeNotifier {
         // A rejected login already routed to the login screen, and a parent
         // who opened the library meanwhile stays there.
         if (_route != AppRoute.player) return;
-        if (!retryOffline) return _setRoute(AppRoute.library);
+        // Only a transient failure is worth retrying; a book that can no
+        // longer be opened (left the shelf or subscription) goes to the
+        // library, where another one can be picked.
+        if (!retryOffline || !_isTransient(e)) {
+          return _setRoute(AppRoute.library);
+        }
         _offline = true;
         notifyListeners();
         _retry = Timer(_retryInterval, () {
@@ -151,6 +160,14 @@ class AppState extends ChangeNotifier {
     _opening = run;
     return run.whenComplete(() => _opening = null);
   }
+
+  /// Network trouble or a server error: the same book may open later. A
+  /// missing stream location carries the 2xx/3xx status, so it is permanent.
+  static bool _isTransient(Object e) =>
+      e is SocketException ||
+      e is TimeoutException ||
+      e is http.ClientException ||
+      (e is StorytelHttpException && e.status >= 500);
 
   void _cancelRetry() {
     _retry?.cancel();
