@@ -26,6 +26,8 @@ class FakePlayerController extends ChangeNotifier implements PlayerController {
   @override
   bool isFinished = false;
   @override
+  bool isReady = true;
+  @override
   Duration position = const Duration(seconds: 4360);
   @override
   Duration get duration => const Duration(seconds: 10265);
@@ -164,6 +166,25 @@ void main() {
     await tester.pump();
     expect(find.byType(PlayerScreen), findsOneWidget);
     expect(playFocused(tester), isTrue);
+  });
+
+  testWidgets('play button shows a spinner until the book is ready', (
+    tester,
+  ) async {
+    final c = FakePlayerController()..isReady = false;
+    await tester.pumpWidget(_Host(c, (_) async {}));
+    await tester.pump();
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow), findsNothing);
+    final focus = Focus.of(
+      tester.element(find.byType(CircularProgressIndicator)),
+    );
+    expect(focus.hasFocus, isTrue);
+    c.isReady = true;
+    c.notifyListeners();
+    await tester.pump();
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byIcon(Icons.play_arrow), findsOneWidget);
   });
 
   testWidgets('shows elapsed and total time', (tester) async {

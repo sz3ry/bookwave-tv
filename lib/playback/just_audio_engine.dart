@@ -7,17 +7,16 @@ import 'audio_engine.dart';
 /// [AudioEngine] backed by `just_audio`.
 class JustAudioEngine implements AudioEngine {
   JustAudioEngine([AudioPlayer? player]) : _player = player ?? AudioPlayer() {
+    _subs.add(_player.playerStateStream.listen((s) => _emit(_map(s))));
+    // just_audio 0.10 reports native errors on errorStream and as an idle
+    // playback event with an error code; its streams never carry errors.
+    _subs.add(_player.errorStream.listen((_) => _emitError()));
     _subs.add(
-      _player.playerStateStream.listen(
-        (s) => _emit(_map(s)),
-        onError: (Object _) => _emit(EnginePlayerState.error),
-      ),
-    );
-    _subs.add(
-      _player.playbackEventStream.listen(
-        (_) {},
-        onError: (Object _) => _emit(EnginePlayerState.error),
-      ),
+      _player.playbackEventStream.listen((e) {
+        if (e.processingState == ProcessingState.idle && e.errorCode != null) {
+          _emitError();
+        }
+      }),
     );
   }
 
@@ -29,6 +28,11 @@ class JustAudioEngine implements AudioEngine {
   /// Whether the loaded source played yet: tells `paused` from `ready`.
   bool _wasPlaying = false;
 
+  /// Counts [load] calls; one source failure is reported once, however many
+  /// of just_audio's channels repeat it.
+  int _generation = 0;
+  int? _failedGeneration;
+
   @override
   Stream<EnginePlayerState> get states => _states.stream;
 
@@ -38,10 +42,11 @@ class JustAudioEngine implements AudioEngine {
   @override
   Future<void> load(String url) async {
     _wasPlaying = false;
+    _generation++;
     try {
       await _player.setUrl(url);
     } catch (_) {
-      _emit(EnginePlayerState.error);
+      _emitError();
       rethrow;
     }
   }
@@ -53,13 +58,11 @@ class JustAudioEngine implements AudioEngine {
   Future<void> play() async {
     // Nothing loaded (e.g. the source failed): playing would stay silent.
     if (_player.processingState == ProcessingState.idle) {
-      _emit(EnginePlayerState.error);
+      _emitError();
       return;
     }
     // just_audio's play() completes only when playback stops: do not wait.
-    unawaited(
-      _player.play().catchError((Object _) => _emit(EnginePlayerState.error)),
-    );
+    unawaited(_player.play().catchError((Object _) => _emitError()));
   }
 
   @override
@@ -85,11 +88,18 @@ class JustAudioEngine implements AudioEngine {
           : (_wasPlaying ? EnginePlayerState.paused : EnginePlayerState.ready),
   };
 
+  /// Reports the current source's failure once: the controller recovers
+  /// with a new [load], so a repeated error would only disturb that.
+  void _emitError() {
+    if (_failedGeneration == _generation) return;
+    _failedGeneration = _generation;
+    _emit(EnginePlayerState.error);
+  }
+
   /// Emits only changes (errors excepted): just_audio repeats states (e.g. on
   /// pause after the end), and the controller acts on each one.
   void _emit(EnginePlayerState state) {
     if (_states.isClosed) return;
-    // An error is always reported: each one may need its own recovery.
     if (state == _last && state != EnginePlayerState.error) return;
     if (state == EnginePlayerState.playing) _wasPlaying = true;
     _last = state;

@@ -29,6 +29,13 @@ class _Session {
   bool recoveryUsed = false;
   int? remoteSeen;
 
+  /// The remote could not be read on open and no remote position was ever
+  /// seen: nothing is written remotely until a read succeeds. [startBase] is
+  /// where the book started (shelf or local position), the stand-in for
+  /// `remoteSeen` when that read decides whether another device moved it.
+  bool remoteUnknown = false;
+  int? startBase;
+
   /// Remote sync waiting in the queue: its newest target position, and
   /// whether it must re-read the remote first (paused-book write guard).
   bool remoteQueued = false;
@@ -51,7 +58,6 @@ class PlayerController extends ChangeNotifier {
     required this._client,
     required this._store,
     DateTime Function()? clock,
-    this.onAuthFailure,
   }) : _clock = clock ?? DateTime.now {
     _stateSub = _engine.states.listen(_onEngineState);
   }
@@ -62,9 +68,6 @@ class PlayerController extends ChangeNotifier {
   final StorytelClient _client;
   final LocalStore _store;
   final DateTime Function() _clock;
-
-  /// Called when Storytel rejects the session during a background call.
-  final void Function()? onAuthFailure;
 
   late final StreamSubscription<EnginePlayerState> _stateSub;
   Timer? _ticker;
@@ -77,9 +80,21 @@ class PlayerController extends ChangeNotifier {
   _Session? _s;
   bool _isPlaying = false;
 
+  /// The engine last reported `playing`: tells a pause the system caused
+  /// (audio focus loss) from the brief pauses around a seek or load.
+  bool _enginePlaying = false;
+
   ShelfBook? get book => _s?.book;
   bool get isPlaying => _isPlaying;
   bool get isFinished => _s?.finished ?? false;
+
+  /// The book's start position is applied and no stream recovery runs: OK
+  /// acts at once. False while a book opens or its stream reloads.
+  bool get isReady {
+    final s = _s;
+    return s != null && s.startApplied && !s.recovering;
+  }
+
   Duration get duration => Duration(milliseconds: _s?.book.durationMs ?? 0);
   Duration get position {
     final s = _s;
@@ -95,11 +110,19 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     await _store.setLastBook(book);
     final local = _store.position(s.id);
-    final remote = await _readRemote(s.id);
+    final read = await _readRemote(s.id);
     if (!identical(s, _s)) return;
-    s.lastRemoteCheckAt = _clock();
+    final remote = read.position;
+    // A failed read is retried on the first play.
+    if (read.ok) s.lastRemoteCheckAt = _clock();
     s.remoteSeen = remote?.positionMs ?? local?.remoteSeen;
-    final start = resolveStartPosition(local, remote);
+    s.remoteUnknown = !read.ok && s.remoteSeen == null;
+    // Without a local position and a readable remote, the shelf's copy of
+    // the remote position beats starting over from 0.
+    final start = !read.ok && local == null
+        ? (book.positionMs ?? 0)
+        : resolveStartPosition(local, remote);
+    if (s.remoteUnknown) s.startBase = start;
     final url = await _client.streamUrl(s.id);
     if (!identical(s, _s)) return;
     await _engine.load(url);
@@ -142,7 +165,18 @@ class PlayerController extends ChangeNotifier {
     await _engine.play();
   }
 
-  /// Book switch or app teardown: pauses, saves locally and writes the remote
+  /// App teardown: saves locally and writes the remote position unless
+  /// another device moved it, without pausing or dropping the book (the
+  /// engine may outlive the activity and keep playing).
+  Future<void> flush() async {
+    final s = _s;
+    if (s == null || !s.startApplied) return;
+    final pos = _posMs(s);
+    await _saveLocal(s, pos);
+    _queueRemote(s, pos, guarded: true);
+  }
+
+  /// Book switch or logout: pauses, saves locally and writes the remote
   /// position unless another device moved it since this app last saw it.
   Future<void> stop() async {
     final s = _s;
@@ -181,10 +215,14 @@ class PlayerController extends ChangeNotifier {
     );
     if (!recheck) return current;
     s.lastRemoteCheckAt = now;
-    final remote = await _readRemote(s.id);
-    if (remote == null || !identical(s, _s)) return current;
+    final read = await _readRemote(s.id);
+    if (!read.ok || !identical(s, _s)) return current;
+    final remote = read.position;
+    final seen = s.remoteUnknown ? s.startBase : s.remoteSeen;
+    s.remoteUnknown = false;
+    if (remote == null) return current;
     final target = resolveStartPosition(
-      storedPosition(current, s.remoteSeen, now: now),
+      storedPosition(current, seen, now: now),
       remote,
     );
     s.remoteSeen = remote.positionMs;
@@ -196,6 +234,11 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _onEngineState(EnginePlayerState state) {
+    final wasEnginePlaying = _enginePlaying;
+    if (state != EnginePlayerState.loading &&
+        state != EnginePlayerState.ready) {
+      _enginePlaying = state == EnginePlayerState.playing;
+    }
     final s = _s;
     if (s == null || !s.startApplied) return;
     switch (state) {
@@ -204,8 +247,15 @@ class PlayerController extends ChangeNotifier {
         _isPlaying = true;
         _startTicker();
       case EnginePlayerState.paused:
+        // Paused by the system, not by this controller: keep the place like
+        // a pause the child made.
+        final unsolicited = wasEnginePlaying && _isPlaying && s.wantsPlay;
         _isPlaying = false;
         _stopTicker();
+        if (unsolicited) {
+          s.wantsPlay = false;
+          _guard(_saveAndSync(s, _posMs(s)));
+        }
       case EnginePlayerState.completed:
         _isPlaying = false;
         s.finished = true;
@@ -217,8 +267,11 @@ class PlayerController extends ChangeNotifier {
       case EnginePlayerState.error:
         _onPlaybackFailure(s);
       case EnginePlayerState.idle:
-        // A play request that ends idle never started.
-        if (s.playRequested) _onPlaybackFailure(s);
+        // A play request that ends idle never started; idle while playing is
+        // a stream that broke (just_audio keeps `playing` set after an error).
+        if (s.playRequested || (_isPlaying && !s.recovering)) {
+          _onPlaybackFailure(s);
+        }
       case EnginePlayerState.loading:
       case EnginePlayerState.ready:
         break;
@@ -227,10 +280,18 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _onPlaybackFailure(_Session s) {
+    // The running recovery loads a new source: a repeated report of the old
+    // failure must not mark the recovered stream untrusted.
+    if (s.recovering) return;
+    // The engine usually keeps its position after an error; it is newer than
+    // the last save unless the engine already dropped to 0.
+    if (s.positionTrusted) {
+      final retained = _engine.position.inMilliseconds;
+      if (retained > 0) s.lastKnownMs = retained;
+    }
     s.playRequested = false;
     s.positionTrusted = false;
     _stopTicker();
-    if (s.recovering) return;
     if (s.wantsPlay && !s.recoveryUsed) {
       s.recoveryUsed = true;
       _guard(_reload(s, s.lastKnownMs));
@@ -244,6 +305,7 @@ class PlayerController extends ChangeNotifier {
   /// return to [targetMs] and play, unless paused or stopped meanwhile.
   Future<void> _reload(_Session s, int targetMs) async {
     s.recovering = true;
+    notifyListeners();
     try {
       final url = await _client.streamUrl(s.id);
       if (!identical(s, _s)) return;
@@ -257,7 +319,8 @@ class PlayerController extends ChangeNotifier {
       s.playRequested = true;
       await _engine.play();
     } catch (e) {
-      if (e is StorytelAuthException) onAuthFailure?.call();
+      // A rejected login is the client's call (`onCredentialsRejected`); a
+      // stray 401 after a good re-login must not log the parent out.
       debugPrint('Stream recovery failed: ${e.runtimeType}');
       if (identical(s, _s)) {
         s.positionTrusted = false;
@@ -266,7 +329,10 @@ class PlayerController extends ChangeNotifier {
         notifyListeners();
       }
     } finally {
-      s.recovering = false;
+      if (s.recovering) {
+        s.recovering = false;
+        if (identical(s, _s)) notifyListeners();
+      }
     }
   }
 
@@ -314,14 +380,48 @@ class PlayerController extends ChangeNotifier {
         final target = s.remoteTargetMs!;
         final guard = s.remoteGuarded;
         s.remoteGuarded = false;
+        if (s.remoteUnknown) return _syncUnknownRemote(s, target);
         if (!shouldWriteRemote(target, s.remoteSeen)) return;
         if (guard) {
           final current = await _readRemote(s.id);
-          if (remoteMovedSince(current?.positionMs, s.remoteSeen)) return;
+          if (remoteMovedSince(current.position?.positionMs, s.remoteSeen)) {
+            return;
+          }
         }
         await _writeRemote(s, target);
       }),
     );
+  }
+
+  /// The remote position is still unknown: read it first and write [target]
+  /// only once that worked. When another device moved the book away from
+  /// where it started here, follow it instead of overwriting it.
+  Future<void> _syncUnknownRemote(_Session s, int target) async {
+    final read = await _readRemote(s.id);
+    // A recovery picks its own target: decide on the next sync instead.
+    if (!read.ok || !s.remoteUnknown || s.recovering) return;
+    final now = _clock();
+    final remote = read.position;
+    s.remoteUnknown = false;
+    s.remoteSeen = remote?.positionMs;
+    s.lastRemoteCheckAt = now;
+    final resolved = resolveStartPosition(
+      storedPosition(target, s.startBase, now: now),
+      remote,
+    );
+    if (resolved != target) {
+      s.lastKnownMs = resolved;
+      await _store.setPosition(
+        s.id,
+        storedPosition(resolved, s.remoteSeen, now: now),
+      );
+      if (identical(s, _s) && s.positionTrusted) {
+        await _engine.seek(Duration(milliseconds: resolved));
+        notifyListeners();
+      }
+      return;
+    }
+    if (shouldWriteRemote(target, s.remoteSeen)) await _writeRemote(s, target);
   }
 
   Future<void> _saveLocal(_Session s, int pos) async {
@@ -346,17 +446,18 @@ class PlayerController extends ChangeNotifier {
     );
   }
 
-  Future<RemotePosition?> _readRemote(String id) async {
+  /// `ok` is false when the read failed; a null position with `ok` means
+  /// the remote holds no position for the book.
+  Future<({bool ok, RemotePosition? position})> _readRemote(String id) async {
     try {
-      return await _client.readPosition(id);
+      return (ok: true, position: await _client.readPosition(id));
     } catch (e) {
       _reportRemoteFailure('read', e);
-      return null;
+      return (ok: false, position: null);
     }
   }
 
   void _reportRemoteFailure(String op, Object e) {
-    if (e is StorytelAuthException) onAuthFailure?.call();
     // Only the type and status: messages may carry URLs or tokens.
     debugPrint(
       'Remote position $op failed: '

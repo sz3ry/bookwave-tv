@@ -190,6 +190,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                   children: [
                                     _PlayButton(
                                       node: _playNode,
+                                      ready: c.isReady,
                                       playing: c.isPlaying,
                                       label: c.isPlaying
                                           ? l10n.pause
@@ -272,6 +273,7 @@ class _Cover extends StatelessWidget {
 class _PlayButton extends StatefulWidget {
   const _PlayButton({
     required this.node,
+    required this.ready,
     required this.playing,
     required this.label,
     required this.onPressed,
@@ -279,6 +281,10 @@ class _PlayButton extends StatefulWidget {
   });
 
   final FocusNode node;
+
+  /// False while the book opens or its stream reloads: a spinner replaces
+  /// the icon, the button keeps focus.
+  final bool ready;
   final bool playing;
   final String label;
   final VoidCallback onPressed;
@@ -298,7 +304,8 @@ class _PlayButtonState extends State<_PlayButton> {
       autofocus: true,
       onFocusChange: (v) => setState(() => _focused = v),
       // Up goes to the Library button; the other arrows are consumed so
-      // focus never leaves the button. Back stays unmapped and leaves the app.
+      // focus never leaves the button. Back stays unmapped: it sends the app to
+      // the background while the book keeps playing (MainActivity).
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.arrowUp): _FocusLibraryIntent(),
         SingleActivator(LogicalKeyboardKey.arrowDown): DoNothingIntent(),
@@ -334,10 +341,15 @@ class _PlayButtonState extends State<_PlayButton> {
               width: 6,
             ),
           ),
-          child: Icon(
-            widget.playing ? Icons.pause : Icons.play_arrow,
-            size: 88,
-          ),
+          child: widget.ready
+              ? Icon(widget.playing ? Icons.pause : Icons.play_arrow, size: 88)
+              : const Padding(
+                  padding: EdgeInsets.all(36),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 8,
+                    color: Colors.orange,
+                  ),
+                ),
         ),
       ),
     );

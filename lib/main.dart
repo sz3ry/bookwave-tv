@@ -4,39 +4,22 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'app.dart';
-import 'app_state.dart';
+import 'composition.dart';
 import 'playback/just_audio_engine.dart';
 import 'playback/media_session_handler.dart';
-import 'playback/player_controller.dart';
 import 'storage/credentials_store.dart';
 import 'storage/local_store.dart';
-import 'storytel/storytel_client.dart';
-import 'storytel/storytel_http.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  final store = await LocalStore.open();
-  final credentials = CredentialsStore(const FlutterSecureStorage());
-  // Both callbacks fire before the state exists only if a call is made
-  // before runApp, which never happens.
-  late final AppState state;
-  final client = StorytelClient(
-    StorytelHttp(http.Client()),
-    onCredentialsRejected: () => state.authRejected(),
-  );
-  final controller = PlayerController(
+  final state = buildAppState(
+    httpClient: http.Client(),
     engine: JustAudioEngine(),
-    client: client,
-    store: store,
-    onAuthFailure: () => state.authRejected(),
+    store: await LocalStore.open(),
+    credentials: CredentialsStore(const FlutterSecureStorage()),
   );
-  state = AppState(
-    client: client,
-    credentials: credentials,
-    store: store,
-    controller: controller,
-  );
+  final controller = state.controller;
 
   await AudioService.init(
     builder: () => MediaSessionHandler(controller),

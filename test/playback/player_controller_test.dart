@@ -10,61 +10,7 @@ import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class FakeAudioEngine implements AudioEngine {
-  final loads = <String>[];
-  final seeks = <Duration>[];
-  int plays = 0;
-  int pauses = 0;
-  bool failNextPlay = false;
-  bool idleNextPlay = false;
-  final _states = StreamController<EnginePlayerState>.broadcast();
-
-  @override
-  Duration position = Duration.zero;
-
-  void emit(EnginePlayerState s) => _states.add(s);
-
-  @override
-  Stream<EnginePlayerState> get states => _states.stream;
-
-  @override
-  Future<void> load(String url) async {
-    loads.add(url);
-    position = Duration.zero;
-    emit(EnginePlayerState.ready);
-  }
-
-  @override
-  Future<void> seek(Duration p) async {
-    seeks.add(p);
-    position = p;
-  }
-
-  @override
-  Future<void> play() async {
-    plays++;
-    if (failNextPlay) {
-      failNextPlay = false;
-      emit(EnginePlayerState.error);
-      return;
-    }
-    if (idleNextPlay) {
-      idleNextPlay = false;
-      emit(EnginePlayerState.idle);
-      return;
-    }
-    emit(EnginePlayerState.playing);
-  }
-
-  @override
-  Future<void> pause() async {
-    pauses++;
-    emit(EnginePlayerState.paused);
-  }
-
-  @override
-  Future<void> dispose() => _states.close();
-}
+import '../support/fake_audio_engine.dart';
 
 class FakeStorytelClient implements StorytelClient {
   /// Remote positions per consumable id.
@@ -78,6 +24,9 @@ class FakeStorytelClient implements StorytelClient {
   Completer<void>? readGate;
   Completer<void>? streamUrlGate;
   Object? streamUrlError;
+
+  /// Every read throws this until cleared.
+  Object? readError;
   int streamUrlCalls = 0;
   int readCalls = 0;
   final writes = <int>[];
@@ -100,6 +49,8 @@ class FakeStorytelClient implements StorytelClient {
     final gate = readGate;
     readGate = null;
     if (gate != null) await gate.future;
+    final error = readError;
+    if (error != null) throw error;
     return remotes[consumableId];
   }
 
@@ -340,33 +291,16 @@ void main() {
     });
   });
 
-  test('remote auth failure reports it and keeps playing', () {
-    SharedPreferences.setMockInitialValues({});
-    fakeAsync((async) {
-      late LocalStore store;
-      LocalStore.open().then((s) => store = s);
-      async.flushMicrotasks();
-      var authFailures = 0;
-      final engine = FakeAudioEngine();
-      final client = FakeStorytelClient()
-        ..writeError = StorytelAuthException(null, isLoginFailure: true);
-      final c = PlayerController(
-        engine: engine,
-        client: client,
-        store: store,
-        clock: () => t0.add(async.elapsed),
-        onAuthFailure: () => authFailures++,
-      );
-      c.open(book());
-      async.flushMicrotasks();
-      c.togglePlayPause();
-      async.flushMicrotasks();
-      engine.position = const Duration(milliseconds: 20000);
-      async.elapse(const Duration(seconds: 15));
-      expect(authFailures, 1);
-      expect(c.isPlaying, isTrue);
-      expect(store.position('c1')?.positionMs, 20000);
-      c.dispose();
+  test('remote auth failure keeps playing and the local position', () {
+    withHarness({}, (h) {
+      h.client.writeError = StorytelAuthException(null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 20000);
+      h.async.elapse(const Duration(seconds: 15));
+      expect(h.controller.isPlaying, isTrue);
+      expect(h.controller.book?.consumableId, 'c1');
+      expect(h.store.position('c1')?.positionMs, 20000);
     });
   });
 
@@ -512,6 +446,195 @@ void main() {
       expect(h.client.streamUrlCalls, 2);
       expect(h.engine.seeks.last, const Duration(milliseconds: 60000));
       expect(h.engine.plays, 2);
+      expect(h.controller.isPlaying, isTrue);
+    });
+  });
+
+  test('error while playing recovers at the engine position', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      h.async.elapse(const Duration(seconds: 15));
+      // The engine kept its position: newer than the last 15 s save.
+      h.engine.position = const Duration(milliseconds: 82000);
+      h.engine.emit(EnginePlayerState.error);
+      h.async.flushMicrotasks();
+      expect(h.client.streamUrlCalls, 2);
+      expect(h.engine.seeks.last, const Duration(milliseconds: 82000));
+      expect(h.engine.plays, 2);
+      expect(h.controller.isPlaying, isTrue);
+    });
+  });
+
+  test('idle while playing triggers recovery', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      h.async.elapse(const Duration(seconds: 15));
+      h.engine.position = Duration.zero;
+      h.engine.emit(EnginePlayerState.idle);
+      h.async.flushMicrotasks();
+      expect(h.client.streamUrlCalls, 2);
+      expect(h.engine.seeks.last, const Duration(milliseconds: 75000));
+      expect(h.engine.plays, 2);
+      expect(h.controller.isPlaying, isTrue);
+    });
+  });
+
+  test(
+    'duplicate errors during recovery leave the stream trusted and ticking',
+    () {
+      withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+        final gate = breakStreamDuringPlay(h);
+        h.engine.emit(EnginePlayerState.error);
+        h.engine.emit(EnginePlayerState.idle);
+        h.async.flushMicrotasks();
+        expect(h.client.streamUrlCalls, 2);
+        gate.complete();
+        h.async.flushMicrotasks();
+        expect(h.engine.seeks.last, const Duration(milliseconds: 75000));
+        expect(h.controller.isPlaying, isTrue);
+        expect(h.controller.isReady, isTrue);
+        h.engine.position = const Duration(milliseconds: 90000);
+        h.async.elapse(const Duration(seconds: 15));
+        expect(h.store.position('c1')?.positionMs, 90000);
+        expect(h.client.writes, [75000, 90000]);
+        expect(h.controller.position, const Duration(milliseconds: 90000));
+      });
+    },
+  );
+
+  test('isReady once the start is applied and while not recovering', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      expect(h.controller.isReady, isFalse);
+      final urlGate = h.client.streamUrlGate = Completer<void>();
+      h.start(() => h.controller.open(book()));
+      expect(h.controller.book?.consumableId, 'c1');
+      expect(h.controller.isReady, isFalse);
+      urlGate.complete();
+      h.async.flushMicrotasks();
+      expect(h.controller.isReady, isTrue);
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      h.async.elapse(const Duration(seconds: 15));
+      final gate = h.client.streamUrlGate = Completer<void>();
+      var notified = false;
+      h.controller.addListener(() => notified = true);
+      h.engine.emit(EnginePlayerState.error);
+      h.async.flushMicrotasks();
+      expect(h.controller.isReady, isFalse);
+      expect(notified, isTrue);
+      gate.complete();
+      h.async.flushMicrotasks();
+      expect(h.controller.isReady, isTrue);
+    });
+  });
+
+  test('engine pausing on its own saves and syncs the position', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 70000);
+      // Audio focus lost: the engine pauses without being asked.
+      h.engine.emit(EnginePlayerState.paused);
+      h.async.flushMicrotasks();
+      expect(h.controller.isPlaying, isFalse);
+      expect(h.store.position('c1')?.positionMs, 70000);
+      expect(h.client.writes, [70000]);
+      // OK resumes from there.
+      h.run(() => h.controller.togglePlayPause());
+      expect(h.controller.isPlaying, isTrue);
+      expect(h.engine.plays, 2);
+    });
+  });
+
+  test('flush saves and syncs but keeps the book playing', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 70000);
+      h.run(() => h.controller.flush());
+      expect(h.controller.book?.consumableId, 'c1');
+      expect(h.controller.isPlaying, isTrue);
+      expect(h.engine.pauses, 0);
+      expect(h.store.position('c1')?.positionMs, 70000);
+      expect(h.client.writes, [70000]);
+      // Guarded: another device's newer position is not overwritten.
+      h.engine.position = const Duration(milliseconds: 80000);
+      h.client.remote = RemotePosition(300000, null);
+      h.run(() => h.controller.flush());
+      expect(h.store.position('c1')?.positionMs, 80000);
+      expect(h.client.writes, [70000]);
+    });
+  });
+
+  ShelfBook shelfAt(int positionMs) => ShelfBook(
+    consumableId: 'c1',
+    title: 'Book c1',
+    authors: 'Author',
+    kidsBook: true,
+    durationMs: 3600000,
+    positionMs: positionMs,
+  );
+
+  test(
+    'failed first read without a local position starts at the shelf one',
+    () {
+      withHarness({}, (h) {
+        h.client.readError = StorytelHttpException(503, null);
+        h.run(() => h.controller.open(shelfAt(500000)));
+        expect(h.engine.seeks, [const Duration(milliseconds: 500000)]);
+        expect(h.controller.position, const Duration(milliseconds: 500000));
+      });
+    },
+  );
+
+  test('no remote write until a remote read succeeds', () {
+    withHarness({}, (h) {
+      h.client.readError = StorytelHttpException(503, null);
+      h.run(() => h.controller.open(shelfAt(500000)));
+      h.run(() => h.controller.togglePlayPause());
+      expect(h.controller.isPlaying, isTrue);
+      h.engine.position = const Duration(milliseconds: 515000);
+      h.async.elapse(const Duration(seconds: 15));
+      expect(h.store.position('c1')?.positionMs, 515000);
+      h.engine.position = const Duration(milliseconds: 530000);
+      h.async.elapse(const Duration(seconds: 15));
+      expect(h.store.position('c1')?.positionMs, 530000);
+      expect(h.client.writes, isEmpty);
+      // The remote answers again and still holds the shelf position.
+      h.client.readError = null;
+      h.client.remote = RemotePosition(500000, null);
+      h.engine.position = const Duration(milliseconds: 545000);
+      h.async.elapse(const Duration(seconds: 15));
+      expect(h.client.writes, [545000]);
+      expect(h.store.position('c1')?.remoteSeen, 545000);
+    });
+  });
+
+  test('a read after a failed first read follows another device', () {
+    withHarness({}, (h) {
+      h.client.readError = StorytelHttpException(503, null);
+      h.run(() => h.controller.open(shelfAt(500000)));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 515000);
+      h.async.elapse(const Duration(seconds: 15));
+      // Meanwhile the iPhone moved the book far ahead.
+      h.client.readError = null;
+      h.client.remote = RemotePosition(900000, null);
+      h.engine.position = const Duration(milliseconds: 530000);
+      h.async.elapse(const Duration(seconds: 15));
+      expect(h.client.writes, isEmpty);
+      expect(h.engine.seeks.last, const Duration(milliseconds: 900000));
+      expect(h.store.position('c1')?.positionMs, 900000);
+      expect(h.store.position('c1')?.remoteSeen, 900000);
       expect(h.controller.isPlaying, isTrue);
     });
   });
