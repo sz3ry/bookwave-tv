@@ -106,26 +106,31 @@ class StorytelClient {
     String? formBody,
     Object? jsonBody,
   }) async {
-    Future<StorytelResponse> attempt() async => _http.send(
+    Future<StorytelResponse> attempt(String bearer) => _http.send(
       method: method,
       url: url,
       query: query,
-      headers: {...?headers, 'authorization': 'Bearer ${await _bearer()}'},
+      headers: {...?headers, 'authorization': 'Bearer $bearer'},
       formBody: formBody,
       jsonBody: jsonBody,
     );
 
+    // Resolved outside the try: a login rejection while obtaining the bearer
+    // must reach the caller as is, never trigger another login.
+    final first = await _bearer();
     try {
-      return await attempt();
+      return await attempt(first);
     } on StorytelAuthException catch (e) {
-      if (_email == null || _encryptedPassword == null) rethrow;
+      if (e.isLoginFailure || _email == null || _encryptedPassword == null) {
+        rethrow;
+      }
       try {
         await _refreshLogin();
       } on StorytelAuthException {
         // A rejected re-login still means "session expired" to the caller.
         throw StorytelAuthException(e.data);
       }
-      return attempt();
+      return attempt(_jwt!);
     }
   }
 

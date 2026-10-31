@@ -290,4 +290,39 @@ void main() {
     expect(shelfCalls, 2);
     expect(logins, 2);
   });
+
+  test('rejected login on the restore path is not retried', () async {
+    var rejected = 0;
+    var shelfCalls = 0;
+    final c = make(
+      (_) {
+        shelfCalls++;
+        return shelfResponse();
+      },
+      onRejected: () => rejected++,
+      loginHandler: (_) => http.Response('no', 401),
+    );
+    c.restore(creds);
+    await expectLater(c.bookshelf(), throwsA(isA<StorytelAuthException>()));
+    expect(logins, 1);
+    expect(rejected, 1);
+    expect(shelfCalls, 0);
+  });
+
+  test('rejected login on the expiry path is not retried', () async {
+    var rejected = 0;
+    var loginCall = 0;
+    final c = make(
+      (_) => shelfResponse(),
+      onRejected: () => rejected++,
+      loginHandler: (_) => ++loginCall == 1
+          ? loginOk(jwt(exp: nowSec() + 30))
+          : http.Response('no', 401),
+    );
+    await c.login('a@b.c', 'secret');
+    expect(logins, 1);
+    await expectLater(c.bookshelf(), throwsA(isA<StorytelAuthException>()));
+    expect(logins, 2);
+    expect(rejected, 1);
+  });
 }
