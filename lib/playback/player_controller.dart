@@ -9,10 +9,36 @@ import '../storytel/storytel_http.dart';
 import 'audio_engine.dart';
 import 'position_rules.dart';
 
+/// State of one opened book. Every async continuation holds its session and
+/// drops its work once the session is no longer the current one.
+class _Session {
+  _Session(this.book);
+
+  final ShelfBook book;
+  String get id => book.consumableId;
+
+  bool startApplied = false;
+
+  /// The engine sits at a position this controller applied; false after a
+  /// stream error, when the engine may report 0.
+  bool positionTrusted = false;
+  bool finished = false;
+  bool wantsPlay = false;
+  bool playRequested = false;
+  bool recovering = false;
+  bool recoveryUsed = false;
+  int? remoteSeen;
+
+  /// Last good position: applied start, seek target or saved value.
+  int lastKnownMs = 0;
+  DateTime? lastRemoteCheckAt;
+}
+
 /// Plays one Storytel book at a time and keeps its position in sync.
 ///
-/// The local position is always saved before any remote call, and no
-/// position is written before the start position was applied in [open].
+/// The local position is always saved before any remote call. No position
+/// is written before the start position was applied, and none is read from
+/// the engine while it is not at a position this controller applied.
 class PlayerController extends ChangeNotifier {
   PlayerController({
     required this._engine,
@@ -31,131 +57,149 @@ class PlayerController extends ChangeNotifier {
   final LocalStore _store;
   final DateTime Function() _clock;
 
-  /// Called when Storytel rejects the session during a background sync.
+  /// Called when Storytel rejects the session during a background call.
   final void Function()? onAuthFailure;
 
   late final StreamSubscription<EnginePlayerState> _stateSub;
   Timer? _ticker;
   bool _tickRunning = false;
 
-  ShelfBook? _book;
+  /// Serialises local saves and remote writes (ticks, pause, stop, end).
+  Future<void> _chain = Future.value();
+
+  _Session? _s;
   bool _isPlaying = false;
-  bool _isFinished = false;
-  bool _startApplied = false;
-  int? _remoteSeen;
-  DateTime? _lastRemoteCheckAt;
 
-  /// Last position known to be good (applied start, seek or saved value);
-  /// the engine may report 0 after a stream error.
-  int _lastKnownMs = 0;
-
-  /// Whether the one stream re-resolve per play attempt was used.
-  bool _recoveryUsed = false;
-
-  ShelfBook? get book => _book;
+  ShelfBook? get book => _s?.book;
   bool get isPlaying => _isPlaying;
-  bool get isFinished => _isFinished;
-  Duration get position => _startApplied ? _engine.position : Duration.zero;
-  Duration get duration => Duration(milliseconds: _book?.durationMs ?? 0);
+  bool get isFinished => _s?.finished ?? false;
+  Duration get duration => Duration(milliseconds: _s?.book.durationMs ?? 0);
+  Duration get position {
+    final s = _s;
+    if (s == null || !s.startApplied) return Duration.zero;
+    return Duration(milliseconds: _posMs(s));
+  }
 
   /// Stops the current book, then loads [book] at its resolved start
   /// position without playing it.
   Future<void> open(ShelfBook book) async {
     await stop();
-    _book = book;
-    _isFinished = false;
+    final s = _s = _Session(book);
     notifyListeners();
     await _store.setLastBook(book);
-    final id = book.consumableId;
-    final local = _store.position(id);
-    final remote = await _readRemote(id);
-    _lastRemoteCheckAt = _clock();
-    _remoteSeen = remote?.positionMs ?? local?.remoteSeen;
+    final local = _store.position(s.id);
+    final remote = await _readRemote(s.id);
+    if (!identical(s, _s)) return;
+    s.lastRemoteCheckAt = _clock();
+    s.remoteSeen = remote?.positionMs ?? local?.remoteSeen;
     final start = resolveStartPosition(local, remote);
-    await _engine.load(await _client.streamUrl(id));
+    final url = await _client.streamUrl(s.id);
+    if (!identical(s, _s)) return;
+    await _engine.load(url);
+    if (!identical(s, _s)) return;
     await _engine.seek(Duration(milliseconds: start));
-    _lastKnownMs = start;
-    _startApplied = true;
+    s.lastKnownMs = start;
+    s.positionTrusted = true;
+    s.startApplied = true;
     notifyListeners();
   }
 
   Future<void> togglePlayPause() async {
-    if (_book == null || !_startApplied) return;
-    if (_isPlaying) return _pause();
-    _recoveryUsed = false;
-    if (_isFinished) {
-      _isFinished = false;
-      await _engine.seek(Duration.zero);
-      _lastKnownMs = 0;
-    } else {
-      await _recheckRemote();
-    }
+    final s = _s;
+    if (s == null || !s.startApplied) return;
+    if (_isPlaying) return _pause(s);
+    s.wantsPlay = true;
     _isPlaying = true;
     notifyListeners();
+    if (s.recovering) return; // the running recovery plays
+    s.recoveryUsed = false;
+    final int target;
+    if (s.finished) {
+      s.finished = false;
+      target = 0;
+    } else {
+      target = await _recheckRemote(s);
+      if (!identical(s, _s)) return;
+    }
+    s.lastKnownMs = target;
+    if (!s.positionTrusted) {
+      if (!s.wantsPlay) return;
+      s.recoveryUsed = true;
+      return _reload(s, target);
+    }
+    if (target != _engine.position.inMilliseconds) {
+      await _engine.seek(Duration(milliseconds: target));
+    }
+    if (!identical(s, _s) || !s.wantsPlay) return;
+    s.playRequested = true;
     await _engine.play();
   }
 
   /// Book switch or app teardown: pauses, saves locally and writes the remote
   /// position unless another device moved it since this app last saw it.
   Future<void> stop() async {
-    final book = _book;
-    if (book == null) return;
+    final s = _s;
+    if (s == null) return;
+    _s = null;
     _stopTicker();
-    final applied = _startApplied;
-    _startApplied = false;
     _isPlaying = false;
-    if (applied) {
-      await _engine.pause();
-      final pos = await _saveLocal(book.consumableId);
-      if (shouldWriteRemote(pos, _remoteSeen)) {
-        final current = await _readRemote(book.consumableId);
-        if (!remoteMovedSince(current?.positionMs, _remoteSeen)) {
-          await _writeRemote(book.consumableId, pos);
-        }
-      }
-    }
-    _book = null;
+    s.wantsPlay = false;
     notifyListeners();
-  }
-
-  Future<void> _pause() async {
-    final book = _book!;
-    _isPlaying = false;
-    _stopTicker();
-    notifyListeners();
+    if (!s.startApplied) return;
+    final pos = _posMs(s);
     await _engine.pause();
-    await _saveAndSync(book.consumableId);
+    await _serial(() async {
+      await _saveLocal(s, pos);
+      if (!shouldWriteRemote(pos, s.remoteSeen)) return;
+      final current = await _readRemote(s.id);
+      if (!remoteMovedSince(current?.positionMs, s.remoteSeen)) {
+        await _writeRemote(s, pos);
+      }
+    });
   }
 
-  /// On resume, follows a remote position another device moved.
-  Future<void> _recheckRemote() async {
+  Future<void> _pause(_Session s) async {
+    _isPlaying = false;
+    s.wantsPlay = false;
+    _stopTicker();
+    notifyListeners();
+    final pos = _posMs(s);
+    await _engine.pause();
+    await _serial(() => _saveAndSync(s, pos));
+  }
+
+  /// On resume, returns where to continue: the remote position when another
+  /// device moved it (rechecked at most every 10 s), else the current one.
+  Future<int> _recheckRemote(_Session s) async {
     final now = _clock();
+    final current = _posMs(s);
     final recheck = shouldRecheckRemote(
-      awaitingStart: !_startApplied,
-      lastCheckAt: _lastRemoteCheckAt,
+      awaitingStart: false,
+      lastCheckAt: s.lastRemoteCheckAt,
       now: now,
     );
-    if (!recheck) return;
-    _lastRemoteCheckAt = now;
-    final id = _book!.consumableId;
-    final remote = await _readRemote(id);
-    if (remote == null || _book?.consumableId != id) return;
-    final currentMs = _engine.position.inMilliseconds;
+    if (!recheck) return current;
+    s.lastRemoteCheckAt = now;
+    final remote = await _readRemote(s.id);
+    if (remote == null || !identical(s, _s)) return current;
     final target = resolveStartPosition(
-      storedPosition(currentMs, _remoteSeen, now: now),
+      storedPosition(current, s.remoteSeen, now: now),
       remote,
     );
-    _remoteSeen = remote.positionMs;
-    await _store.setPosition(id, storedPosition(target, _remoteSeen, now: now));
-    if (target != currentMs) {
-      await _engine.seek(Duration(milliseconds: target));
-    }
-    _lastKnownMs = target;
+    s.remoteSeen = remote.positionMs;
+    await _store.setPosition(
+      s.id,
+      storedPosition(target, s.remoteSeen, now: now),
+    );
+    return target;
   }
 
   void _onEngineState(EnginePlayerState state) {
+    final s = _s;
+    if (s == null || !s.startApplied) return;
     switch (state) {
       case EnginePlayerState.playing:
+        s.playRequested = false;
         _isPlaying = true;
         _startTicker();
       case EnginePlayerState.paused:
@@ -163,22 +207,17 @@ class PlayerController extends ChangeNotifier {
         _stopTicker();
       case EnginePlayerState.completed:
         _isPlaying = false;
-        _isFinished = true;
+        s.finished = true;
+        s.wantsPlay = false;
         _stopTicker();
-        final book = _book;
-        if (book != null && _startApplied) {
-          unawaited(_engine.pause());
-          unawaited(_saveAndSync(book.consumableId));
-        }
+        final pos = _posMs(s);
+        _guard(_engine.pause());
+        _guard(_serial(() => _saveAndSync(s, pos)));
       case EnginePlayerState.error:
-        _stopTicker();
-        if (_book != null && _startApplied && !_recoveryUsed) {
-          _recoveryUsed = true;
-          unawaited(_recover());
-        } else {
-          _isPlaying = false;
-        }
+        _onPlaybackFailure(s);
       case EnginePlayerState.idle:
+        // A play request that ends idle never started.
+        if (s.playRequested) _onPlaybackFailure(s);
       case EnginePlayerState.loading:
       case EnginePlayerState.ready:
         break;
@@ -186,28 +225,52 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onPlaybackFailure(_Session s) {
+    s.playRequested = false;
+    s.positionTrusted = false;
+    _stopTicker();
+    if (s.recovering) return;
+    if (s.wantsPlay && !s.recoveryUsed) {
+      s.recoveryUsed = true;
+      _guard(_reload(s, s.lastKnownMs));
+    } else {
+      s.wantsPlay = false;
+      _isPlaying = false;
+    }
+  }
+
   /// The signed stream URL expired or the stream broke: resolve it again,
-  /// return to the last good position and play once more.
-  Future<void> _recover() async {
-    final id = _book!.consumableId;
-    final savedMs = _lastKnownMs;
+  /// return to [targetMs] and play, unless paused or stopped meanwhile.
+  Future<void> _reload(_Session s, int targetMs) async {
+    s.recovering = true;
     try {
-      final url = await _client.streamUrl(id);
-      if (_book?.consumableId != id) return;
+      final url = await _client.streamUrl(s.id);
+      if (!identical(s, _s)) return;
       await _engine.load(url);
-      await _engine.seek(Duration(milliseconds: savedMs));
+      if (!identical(s, _s)) return;
+      await _engine.seek(Duration(milliseconds: targetMs));
+      s.lastKnownMs = targetMs;
+      s.positionTrusted = true;
+      if (!identical(s, _s) || !s.wantsPlay) return;
+      s.recovering = false;
+      s.playRequested = true;
       await _engine.play();
     } catch (e) {
       if (e is StorytelAuthException) onAuthFailure?.call();
       debugPrint('Stream recovery failed: ${e.runtimeType}');
-      _isPlaying = false;
-      notifyListeners();
+      if (identical(s, _s)) {
+        s.positionTrusted = false;
+        s.wantsPlay = false;
+        _isPlaying = false;
+        notifyListeners();
+      }
+    } finally {
+      s.recovering = false;
     }
   }
 
   void _startTicker() {
-    if (!_startApplied) return;
-    _ticker ??= Timer.periodic(_tickInterval, (_) => _tick());
+    _ticker ??= Timer.periodic(_tickInterval, (_) => _guard(_tick()));
   }
 
   void _stopTicker() {
@@ -216,44 +279,46 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _tick() async {
-    final book = _book;
-    if (book == null || !_startApplied || _tickRunning) return;
+    final s = _s;
+    if (s == null || !s.positionTrusted || !_isPlaying || _tickRunning) return;
     _tickRunning = true;
     try {
-      await _saveAndSync(book.consumableId);
-      _recoveryUsed = false;
+      final pos = _posMs(s);
+      await _serial(() => _saveAndSync(s, pos));
+      s.recoveryUsed = false;
     } finally {
       _tickRunning = false;
     }
   }
 
+  int _posMs(_Session s) =>
+      s.positionTrusted ? _engine.position.inMilliseconds : s.lastKnownMs;
+
   /// Saves locally, then writes the remote when the position moved.
-  Future<void> _saveAndSync(String id) async {
-    final pos = await _saveLocal(id);
-    if (shouldWriteRemote(pos, _remoteSeen)) await _writeRemote(id, pos);
+  Future<void> _saveAndSync(_Session s, int pos) async {
+    await _saveLocal(s, pos);
+    if (shouldWriteRemote(pos, s.remoteSeen)) await _writeRemote(s, pos);
   }
 
-  Future<int> _saveLocal(String id) async {
-    final pos = _engine.position.inMilliseconds;
-    _lastKnownMs = pos;
+  Future<void> _saveLocal(_Session s, int pos) async {
+    s.lastKnownMs = pos;
     await _store.setPosition(
-      id,
-      storedPosition(pos, _remoteSeen, now: _clock()),
+      s.id,
+      storedPosition(pos, s.remoteSeen, now: _clock()),
     );
-    return pos;
   }
 
-  Future<void> _writeRemote(String id, int positionMs) async {
+  Future<void> _writeRemote(_Session s, int positionMs) async {
     try {
-      await _client.writePosition(id, positionMs, _store.deviceId());
+      await _client.writePosition(s.id, positionMs, _store.deviceId());
     } catch (e) {
       _reportRemoteFailure('write', e);
       return;
     }
-    _remoteSeen = positionMs;
+    s.remoteSeen = positionMs;
     await _store.setPosition(
-      id,
-      withRemoteSeen(_store.position(id), positionMs),
+      s.id,
+      withRemoteSeen(_store.position(s.id), positionMs),
     );
   }
 
@@ -275,8 +340,23 @@ class PlayerController extends ChangeNotifier {
     );
   }
 
+  Future<void> _serial(Future<void> Function() task) {
+    final next = _chain.then((_) => task());
+    _chain = next.catchError((Object _) {});
+    return next;
+  }
+
+  void _guard(Future<void> f) {
+    unawaited(
+      f.catchError(
+        (Object e) => debugPrint('Playback task failed: ${e.runtimeType}'),
+      ),
+    );
+  }
+
   @override
   void dispose() {
+    _s = null;
     _stopTicker();
     _stateSub.cancel();
     super.dispose();

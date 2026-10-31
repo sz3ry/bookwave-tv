@@ -51,6 +51,11 @@ class JustAudioEngine implements AudioEngine {
 
   @override
   Future<void> play() async {
+    // Nothing loaded (e.g. the source failed): playing would stay silent.
+    if (_player.processingState == ProcessingState.idle) {
+      _emit(EnginePlayerState.error);
+      return;
+    }
     // just_audio's play() completes only when playback stops: do not wait.
     unawaited(
       _player.play().catchError((Object _) => _emit(EnginePlayerState.error)),
@@ -80,10 +85,12 @@ class JustAudioEngine implements AudioEngine {
           : (_wasPlaying ? EnginePlayerState.paused : EnginePlayerState.ready),
   };
 
-  /// Emits only changes: just_audio repeats states (e.g. on pause after the
-  /// end), and the controller acts on each one.
+  /// Emits only changes (errors excepted): just_audio repeats states (e.g. on
+  /// pause after the end), and the controller acts on each one.
   void _emit(EnginePlayerState state) {
-    if (state == _last || _states.isClosed) return;
+    if (_states.isClosed) return;
+    // An error is always reported: each one may need its own recovery.
+    if (state == _last && state != EnginePlayerState.error) return;
     if (state == EnginePlayerState.playing) _wasPlaying = true;
     _last = state;
     _states.add(state);
