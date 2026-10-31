@@ -3,13 +3,14 @@ import 'package:bookwave_tv/playback/player_controller.dart';
 import 'package:bookwave_tv/storytel/models.dart';
 import 'package:bookwave_tv/ui/library_screen.dart';
 import 'package:bookwave_tv/ui/player_screen.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _Controller extends ChangeNotifier implements PlayerController {
+import '../support/fakes.dart';
+
+class FakePlayerController extends ChangeNotifier implements PlayerController {
   int toggles = 0;
 
   @override
@@ -43,7 +44,7 @@ class _Controller extends ChangeNotifier implements PlayerController {
 class _Host extends StatefulWidget {
   const _Host(this.controller, this.wakelock);
 
-  final _Controller controller;
+  final PlayerController controller;
   final Future<void> Function(bool) wakelock;
 
   @override
@@ -65,7 +66,7 @@ class _HostState extends State<_Host> {
     ],
     home: library
         ? LibraryScreen(
-            loadShelf: () async => [],
+            loadShelf: () async => [shelfBook('x')],
             onPick: (_) {},
             onBack: () => setState(() => library = false),
             canGoBack: true,
@@ -78,8 +79,11 @@ class _HostState extends State<_Host> {
   );
 }
 
-Future<_Controller> pump(WidgetTester tester, {List<bool>? wakelock}) async {
-  final c = _Controller();
+Future<FakePlayerController> pump(
+  WidgetTester tester, {
+  List<bool>? wakelock,
+}) async {
+  final c = FakePlayerController();
   await tester.pumpWidget(_Host(c, (on) async => wakelock?.add(on)));
   await tester.pump();
   return c;
