@@ -1,0 +1,16 @@
+{
+  "@@locale": "pl",
+  "appTitle": "Bookwave TV",
+  "loginTitle": "Zaloguj się do Storytel",
+  "email": "E-mail",
+  "password": "Hasło",
+  "loginButton": "Zaloguj",
+  "loginRejected": "Nieprawidłowy e-mail lub hasło",
+  "loginFailed": "Nie udało się zalogować. Spróbuj ponownie.",
+  "library": "Biblioteka",
+  "libraryEmpty": "Na półce nie ma audiobooków. Dodaj książkę w Bookwave albo w aplikacji Storytel.",
+  "noConnection": "Brak połączenia. Ponawiam…",
+  "play": "Odtwórz",
+  "pause": "Pauza",
+  "finished": "Koniec książki"
+}
