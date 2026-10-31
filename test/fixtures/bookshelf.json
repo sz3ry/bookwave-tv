@@ -1,0 +1,55 @@
+{
+  "items": {
+    "1": {
+      "action": "ADD",
+      "model": {
+        "id": "42",
+        "title": "Dzieci z Bullerbyn – Łódź",
+        "authors": [{ "name": "Astrid Lindgren" }, { "name": "Jan Kowalski" }],
+        "stateUpdateTime": "2026-10-29T10:00:00Z",
+        "kidsBook": true,
+        "formats": [
+          {
+            "type": "ebook",
+            "cover": { "url": "https://cdn/ebook.jpg" }
+          },
+          {
+            "type": "abook",
+            "cover": { "url": "https://cdn/abook42.jpg" },
+            "durationInMilliseconds": 3600000,
+            "position": {
+              "position": 120000,
+              "updatedTime": "2026-10-30T20:00:00Z",
+              "kidsMode": false
+            }
+          }
+        ]
+      }
+    },
+    "2": {
+      "action": "ADD",
+      "model": {
+        "id": "43",
+        "title": "Second Book",
+        "authors": [{ "name": "Some Author" }],
+        "stateUpdateTime": "2026-10-28T09:00:00Z",
+        "formats": [
+          {
+            "type": "abook",
+            "cover": { "url": "https://cdn/abook43.jpg" },
+            "durationInMilliseconds": 7200000
+          }
+        ]
+      }
+    },
+    "3": {
+      "action": "ADD",
+      "model": {
+        "id": "44",
+        "title": "Ebook Only",
+        "authors": [{ "name": "Reader" }],
+        "formats": [{ "type": "ebook", "cover": { "url": "https://cdn/e.jpg" } }]
+      }
+    }
+  }
+}
