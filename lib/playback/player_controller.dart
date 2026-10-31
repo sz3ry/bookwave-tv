@@ -64,7 +64,8 @@ class PlayerController extends ChangeNotifier {
   Timer? _ticker;
   bool _tickRunning = false;
 
-  /// Serialises local saves and remote writes (ticks, pause, stop, end).
+  /// Serialises remote work (guarded reads, writes, `remoteSeen` updates);
+  /// local saves never wait on it.
   Future<void> _chain = Future.value();
 
   _Session? _s;
@@ -148,8 +149,8 @@ class PlayerController extends ChangeNotifier {
     if (!s.startApplied) return;
     final pos = _posMs(s);
     await _engine.pause();
+    await _saveLocal(s, pos);
     await _serial(() async {
-      await _saveLocal(s, pos);
       if (!shouldWriteRemote(pos, s.remoteSeen)) return;
       final current = await _readRemote(s.id);
       if (!remoteMovedSince(current?.positionMs, s.remoteSeen)) {
@@ -165,7 +166,7 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     final pos = _posMs(s);
     await _engine.pause();
-    await _serial(() => _saveAndSync(s, pos));
+    await _saveAndSync(s, pos);
   }
 
   /// On resume, returns where to continue: the remote position when another
@@ -212,7 +213,7 @@ class PlayerController extends ChangeNotifier {
         _stopTicker();
         final pos = _posMs(s);
         _guard(_engine.pause());
-        _guard(_serial(() => _saveAndSync(s, pos)));
+        _guard(_saveAndSync(s, pos));
       case EnginePlayerState.error:
         _onPlaybackFailure(s);
       case EnginePlayerState.idle:
@@ -284,7 +285,7 @@ class PlayerController extends ChangeNotifier {
     _tickRunning = true;
     try {
       final pos = _posMs(s);
-      await _serial(() => _saveAndSync(s, pos));
+      await _saveAndSync(s, pos);
       s.recoveryUsed = false;
     } finally {
       _tickRunning = false;
@@ -294,10 +295,13 @@ class PlayerController extends ChangeNotifier {
   int _posMs(_Session s) =>
       s.positionTrusted ? _engine.position.inMilliseconds : s.lastKnownMs;
 
-  /// Saves locally, then writes the remote when the position moved.
+  /// Saves locally at once, then (queued behind earlier remote work) writes
+  /// the remote when the position moved.
   Future<void> _saveAndSync(_Session s, int pos) async {
     await _saveLocal(s, pos);
-    if (shouldWriteRemote(pos, s.remoteSeen)) await _writeRemote(s, pos);
+    await _serial(() async {
+      if (shouldWriteRemote(pos, s.remoteSeen)) await _writeRemote(s, pos);
+    });
   }
 
   Future<void> _saveLocal(_Session s, int pos) async {

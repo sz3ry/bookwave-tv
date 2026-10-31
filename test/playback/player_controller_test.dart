@@ -515,4 +515,34 @@ void main() {
       expect(h.controller.isPlaying, isTrue);
     });
   });
+
+  test('local save on pause does not wait on an in-flight remote write', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      h.client.writeGate = Completer<void>(); // never completes
+      h.async.elapse(const Duration(seconds: 15));
+      h.engine.position = const Duration(milliseconds: 80000);
+      h.start(() => h.controller.togglePlayPause());
+      expect(h.controller.isPlaying, isFalse);
+      expect(h.store.position('c1')?.positionMs, 80000);
+    });
+  });
+
+  test('local save on stop does not wait on an in-flight remote write', () {
+    withHarness(localPos('c1', 60000, remoteSeen: 60000), (h) {
+      h.client.remote = RemotePosition(60000, null);
+      h.run(() => h.controller.open(book()));
+      h.run(() => h.controller.togglePlayPause());
+      h.engine.position = const Duration(milliseconds: 75000);
+      h.client.writeGate = Completer<void>(); // never completes
+      h.async.elapse(const Duration(seconds: 15));
+      h.engine.position = const Duration(milliseconds: 80000);
+      h.start(() => h.controller.stop());
+      expect(h.controller.book, isNull);
+      expect(h.store.position('c1')?.positionMs, 80000);
+    });
+  });
 }
