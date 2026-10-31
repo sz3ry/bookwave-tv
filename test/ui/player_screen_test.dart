@@ -159,6 +159,7 @@ void main() {
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.select);
     await tester.pump();
+    await tester.pump(); // the shelf loads and a tile takes focus
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(find.byType(PlayerScreen), findsOneWidget);
