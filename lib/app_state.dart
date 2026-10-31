@@ -93,6 +93,11 @@ class AppState extends ChangeNotifier {
         await controller.open(b);
       } catch (e) {
         debugPrint('Opening a book failed: ${e.runtimeType}');
+        // Drop the half-opened book so Back cannot lead to a dead player;
+        // the last-book record stays.
+        try {
+          await controller.stop();
+        } catch (_) {}
         // A rejected login already routed to the login screen.
         if (_route == AppRoute.player) _setRoute(fallback);
       }

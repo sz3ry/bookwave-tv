@@ -94,6 +94,18 @@ void main() {
     expect(s.state.route, AppRoute.player);
   });
 
+  test('failed open drops the book and falls back to the library', () async {
+    final s = await Setup.create();
+    await s.state.start();
+    s.controller.openError = Exception('offline');
+    await s.state.pickBook(shelfBook('c1'));
+    expect(s.state.route, AppRoute.library);
+    expect(s.controller.stops, 1);
+    expect(s.controller.book, isNull);
+    s.state.closeLibrary();
+    expect(s.state.route, AppRoute.library);
+  });
+
   test('closeLibrary only returns to the player with a book', () async {
     final s = await Setup.create();
     await s.state.start();

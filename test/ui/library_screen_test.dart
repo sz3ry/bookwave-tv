@@ -131,10 +131,26 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.binding.handlePopRoute();
+    // The key must stay unhandled so Android's Back can leave the app.
+    expect(await tester.sendKeyEvent(LogicalKeyboardKey.escape), isFalse);
     await tester.pump();
     expect(backs, 0);
+  });
+
+  testWidgets('autofocused first tile shows the outline without a key', (
+    tester,
+  ) async {
+    await tester.pumpWidget(screen(() async => [shelfBook('a')]));
+    await tester.pump();
+    await tester.pump();
+    final box = tester.widget<DecoratedBox>(
+      find.descendant(
+        of: find.byType(LibraryTile),
+        matching: find.byType(DecoratedBox),
+      ),
+    );
+    final border = (box.decoration as BoxDecoration).border! as Border;
+    expect(border.top.color, Colors.orange);
   });
 
   testWidgets('library shows no-connection and retries', (tester) async {

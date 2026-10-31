@@ -136,10 +136,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
     }
     return Shortcuts(
-      shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.goBack): _BackIntent(),
-        SingleActivator(LogicalKeyboardKey.escape): _BackIntent(),
-      },
+      // Without a book to return to the keys stay unmapped, so the event is
+      // not consumed and Android's Back leaves the app.
+      shortcuts: widget.canGoBack
+          ? const {
+              SingleActivator(LogicalKeyboardKey.goBack): _BackIntent(),
+              SingleActivator(LogicalKeyboardKey.escape): _BackIntent(),
+            }
+          : const {},
       child: Actions(
         actions: {
           _BackIntent: CallbackAction<_BackIntent>(
@@ -201,7 +205,7 @@ class _LibraryTileState extends State<LibraryTile> {
     );
     return FocusableActionDetector(
       autofocus: widget.autofocus,
-      onShowFocusHighlight: (v) => setState(() => _focused = v),
+      onFocusChange: (v) => setState(() => _focused = v),
       actions: {
         ActivateIntent: CallbackAction<ActivateIntent>(
           onInvoke: (_) {
