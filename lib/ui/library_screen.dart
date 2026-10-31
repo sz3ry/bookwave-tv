@@ -107,13 +107,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ? const NoConnection()
           : const Center(child: CircularProgressIndicator());
     } else if (books.isEmpty) {
-      body = Center(
-        child: Padding(
-          padding: const EdgeInsets.all(48),
-          child: Text(
-            l10n.libraryEmpty,
-            style: Theme.of(context).textTheme.headlineSmall,
-            textAlign: TextAlign.center,
+      // Focusable so the Back shortcut has a focus scope to fire in.
+      body = Focus(
+        autofocus: true,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(48),
+            child: Text(
+              l10n.libraryEmpty,
+              style: Theme.of(context).textTheme.headlineSmall,
+              textAlign: TextAlign.center,
+            ),
           ),
         ),
       );

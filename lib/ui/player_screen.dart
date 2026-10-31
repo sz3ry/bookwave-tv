@@ -16,8 +16,13 @@ String formatClock(Duration d) {
   return '$h:${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
 }
 
-Future<void> _defaultWakelock(bool enable) =>
-    WakelockPlus.toggle(enable: enable);
+Future<void> _defaultWakelock(bool enable) async {
+  try {
+    await WakelockPlus.toggle(enable: enable);
+  } catch (_) {
+    // The screen stays on best-effort; a platform failure must not crash.
+  }
+}
 
 /// The start screen: cover, title, one big play/pause button and progress.
 /// The remote has no play/pause key, so focus always returns to the button.
@@ -37,6 +42,14 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
+final _toggleKeys = {
+  LogicalKeyboardKey.select,
+  LogicalKeyboardKey.enter,
+  LogicalKeyboardKey.numpadEnter,
+  LogicalKeyboardKey.gameButtonA,
+  LogicalKeyboardKey.mediaPlayPause,
+};
+
 class _ToggleIntent extends Intent {
   const _ToggleIntent();
 }
@@ -50,14 +63,22 @@ class _FocusLibraryIntent extends Intent {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  final _playNode = FocusNode(debugLabel: 'play');
+  // Holding OK must toggle once per press, so key repeats are swallowed
+  // before the activation shortcuts see them.
+  final _playNode = FocusNode(
+    debugLabel: 'play',
+    onKeyEvent: (_, event) =>
+        event is KeyRepeatEvent && _toggleKeys.contains(event.logicalKey)
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored,
+  );
   final _libraryNode = FocusNode(debugLabel: 'library');
   Timer? _ticker;
 
   @override
   void initState() {
     super.initState();
-    widget.setWakelock(true);
+    _wakelock(true);
     // The position moves without notifications, so redraw once a second.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && widget.controller.isPlaying) setState(() {});
@@ -67,10 +88,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
-    widget.setWakelock(false);
+    _wakelock(false);
     _playNode.dispose();
     _libraryNode.dispose();
     super.dispose();
+  }
+
+  void _wakelock(bool enable) {
+    try {
+      widget.setWakelock(enable).catchError((Object _) {});
+    } catch (_) {}
   }
 
   void _toggle() => widget.controller.togglePlayPause();
@@ -80,7 +107,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final l10n = AppLocalizations.of(context);
     return Shortcuts(
       shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.mediaPlayPause): _ToggleIntent(),
+        SingleActivator(
+          LogicalKeyboardKey.mediaPlayPause,
+          includeRepeats: false,
+        ): _ToggleIntent(),
       },
       child: Actions(
         actions: {

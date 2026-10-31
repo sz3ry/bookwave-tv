@@ -137,6 +137,39 @@ void main() {
     expect(backs, 0);
   });
 
+  testWidgets(
+    'empty library Back returns to the player when a book is loaded',
+    (tester) async {
+      var backs = 0;
+      await tester.pumpWidget(
+        screen(
+          () async => [shelfBook('adult', kids: false)],
+          onBack: () => backs++,
+        ),
+      );
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(backs, 1);
+    },
+  );
+
+  testWidgets('empty library Back is not consumed without a loaded book', (
+    tester,
+  ) async {
+    var backs = 0;
+    await tester.pumpWidget(
+      screen(
+        () async => [shelfBook('adult', kids: false)],
+        onBack: () => backs++,
+        canGoBack: false,
+      ),
+    );
+    await tester.pump();
+    expect(await tester.sendKeyEvent(LogicalKeyboardKey.escape), isFalse);
+    expect(backs, 0);
+  });
+
   testWidgets('autofocused first tile shows the outline without a key', (
     tester,
   ) async {

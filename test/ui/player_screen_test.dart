@@ -186,4 +186,32 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     expect(calls, [true, false]);
   });
+
+  testWidgets('holding OK toggles once', (tester) async {
+    final c = await pump(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.select);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.select);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.select);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.select);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.select);
+    await tester.pump();
+    expect(c.toggles, 1);
+  });
+
+  testWidgets('holding media play-pause toggles once', (tester) async {
+    final c = await pump(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.mediaPlayPause);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.mediaPlayPause);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.mediaPlayPause);
+    await tester.pump();
+    expect(c.toggles, 1);
+  });
+
+  testWidgets('wakelock failure does not throw', (tester) async {
+    final c = FakePlayerController();
+    await tester.pumpWidget(_Host(c, (on) async => throw Exception('wl')));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+  });
 }
