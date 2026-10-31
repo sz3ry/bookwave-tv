@@ -43,6 +43,21 @@ Switching from a debug (or debug-signed) build to a release signed with your
 keystore changes the signature, so uninstall first:
 `~/Android/Sdk/platform-tools/adb uninstall com.sz3ry.bookwavetv`.
 
+## Logging in
+
+The TV's on-screen keyboard cannot be used: on Chromecast with Google TV a
+Flutter text field keeps the remote's D-pad events, so the arrows never reach
+the keyboard ([flutter/flutter#177360](https://github.com/flutter/flutter/issues/177360)).
+Type with a phone instead:
+
+1. Open the Google TV app on the phone (same Wi-Fi as the TV) and open its remote.
+2. On the TV, select the e-mail field with the remote and press OK.
+3. Tap the keyboard icon in the phone's remote and type the e-mail, then press Enter: the TV moves to the password field.
+4. Type the password and press Enter to log in.
+
+The app keeps the login, so this is needed once (and again only after a
+password change). Only kids books (`kidsBook`) from the account's shelf are shown.
+
 ## Development
 
 ```sh
